@@ -9,6 +9,7 @@
 #define MAX_CLIENTS 10
 #define SEAT_COUNT 20
 #define BUFFER_SIZE 1024
+#define SAVE_FILE "seats.txt"   // ไฟล์เก็บสถานะที่นั่ง
 
 // ---- Seat Data ----
 typedef struct {
@@ -19,13 +20,35 @@ typedef struct {
 Seat seats[SEAT_COUNT];
 pthread_mutex_t seat_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-// ---- Client info struct (ส่งเข้า thread) ----
+// ---- Client info struct ----
 typedef struct {
     int  fd;
     char ip[INET_ADDRSTRLEN];
     int  port;
 } ClientInfo;
 
+// ---- บันทึกสถานะลงไฟล์ ----
+// เรียกทุกครั้งที่มีการจองสำเร็จ
+void save_seats() {
+    FILE *f = fopen(SAVE_FILE, "w");
+    if (!f) return;
+    for (int i = 0; i < SEAT_COUNT; i++)
+        fprintf(f, "%s %d\n", seats[i].name, seats[i].booked);
+    fclose(f);
+}
+
+// ---- โหลดสถานะจากไฟล์ ----
+// เรียกตอน server เริ่มทำงาน
+void load_seats() {
+    FILE *f = fopen(SAVE_FILE, "r");
+    if (!f) return;  // ไม่มีไฟล์ = ครั้งแรก ใช้ค่า default
+    for (int i = 0; i < SEAT_COUNT; i++)
+        fscanf(f, "%s %d", seats[i].name, &seats[i].booked);
+    fclose(f);
+    printf("[Server] Seat data loaded from %s\n", SAVE_FILE);
+}
+
+// ---- เซ็ตค่าเริ่มต้นที่นั่ง แล้วโหลดไฟล์ทับ ----
 void init_seats() {
     int idx = 0;
     for (int i = 1; i <= 10; i++) {
@@ -38,6 +61,7 @@ void init_seats() {
         seats[idx].booked = 0;
         idx++;
     }
+    load_seats();  // ถ้ามี seats.txt อยู่แล้ว โหลดทับ
 }
 
 int find_seat(const char *seat_name) {
@@ -113,6 +137,7 @@ void handle_book(int client_fd, char *args) {
         return;
     }
     seats[idx].booked = 1;
+    save_seats();  // บันทึกทันทีหลังจองสำเร็จ
     pthread_mutex_unlock(&seat_mutex);
 
     printf("\n===== New Booking Received =====\n");
@@ -145,7 +170,6 @@ void *client_handler(void *arg) {
         memset(buf, 0, sizeof(buf));
         int bytes = recv(client_fd, buf, sizeof(buf) - 1, 0);
 
-        // Client ปิด connection กะทันหัน (ไม่ได้กด Exit)
         if (bytes <= 0) {
             printf("[Disconnected] Client %s:%d lost connection.\n", ip, port);
             fflush(stdout);
@@ -159,7 +183,6 @@ void *client_handler(void *arg) {
         } else if (strncmp(buf, "BOOK ", 5) == 0) {
             handle_book(client_fd, buf + 5);
         } else if (strcmp(buf, "EXIT") == 0) {
-            // Client กด Exit เองจาก menu
             printf("[Disconnected] Client %s:%d exited.\n", ip, port);
             fflush(stdout);
             break;
@@ -202,7 +225,6 @@ int main() {
         int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
         if (client_fd < 0) { perror("accept"); continue; }
 
-        // เก็บ ip + port ไว้ใน struct แล้วส่งเข้า thread
         ClientInfo *info = malloc(sizeof(ClientInfo));
         info->fd   = client_fd;
         info->port = ntohs(client_addr.sin_port);
